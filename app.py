@@ -10,7 +10,7 @@ app = Flask(__name__)
 app.secret_key = 'SOME_SECRET_KEY'  # Change for production
 
 # Global MQTT settings
-mqtt_server = "172.16.0.101"
+mqtt_server = "192.168.0.51"
 mqtt_port = 1884
 
 # Configure database (SQLite example). For MySQL/Postgres, adjust accordingly.
