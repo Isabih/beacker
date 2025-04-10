@@ -10,8 +10,8 @@ app = Flask(__name__)
 app.secret_key = 'SOME_SECRET_KEY'  # Change for production
 
 # Global MQTT settings
-mqtt_server = "192.168.0.51"
-mqtt_port = 1883
+mqtt_server = "172.16.0.101"
+mqtt_port = 1884
 
 # Configure database (SQLite example). For MySQL/Postgres, adjust accordingly.
 basedir = os.path.abspath(os.path.dirname(__file__))
@@ -426,39 +426,49 @@ def relay_control():
       "state": "on" or "off"
     }
     """
-    data = request.get_json()
-    meter_number = data.get('meter_number')
-    state = data.get('state')
-
-    if not meter_number or state not in ["on", "off"]:
-        return jsonify({'error': 'Invalid request. Ensure meter_number and state are correct.'}), 400
-
-    # Verify meter exists in database
-    user = User.query.filter_by(meter_number=meter_number).first()
-    if not user:
-        return jsonify({'error': 'Meter number not found'}), 404
-
-    # Construct MQTT payload
-    command_payload = json.dumps({
-        "meter_number": meter_number,
-        "command": state
-    })
-
-    # Publish to MQTT topic
     try:
-        flask_mqtt_client.publish("relay/control", command_payload)
-        return jsonify({'message': f"Relay command '{state}' sent to meter {meter_number}."})
-    except Exception as e:
-        return jsonify({'error': f"MQTT publish failed: {str(e)}"}), 500
+        data = request.get_json()
+        meter_number = data.get('meter_number')
+        state = data.get('state')
 
+        if not meter_number or state not in ["on", "off"]:
+            return jsonify({'error': 'Invalid request. Ensure meter_number and state are correct.'}), 400
+
+        # Verify meter exists in database
+        user = User.query.filter_by(meter_number=meter_number).first()
+        if not user:
+            return jsonify({'error': 'Meter number not found'}), 404
+
+        # Construct MQTT payload
+        command_payload = json.dumps({
+            "meter_number": meter_number,
+            "command": state
+        })
+
+        # Publish to MQTT topic with error handling
+        result = flask_mqtt_client.publish("relay/control", command_payload)
+        status = result.rc  # 0 = Success
+
+        if status == 0:
+            return jsonify({'message': f"Relay command '{state}' sent to meter {meter_number}."})
+        else:
+            return jsonify({'error': 'MQTT publish failed', 'status_code': status}), 500
+
+    except Exception as e:
+        return jsonify({'error': f"Unexpected error: {str(e)}"}), 500
 
 ####################################
 # MQTT Subscriber (Embedded)
 ####################################
+
 def mqtt_on_connect(client, userdata, flags, rc):
-    print("Connected to MQTT broker with result code " + str(rc))
-    client.subscribe("power/monitor")
-    client.subscribe("relay/control")
+    if rc == 0:
+        print("Connected to MQTT broker.")
+        client.subscribe("power/monitor")
+        client.subscribe("relay/control")
+    else:
+        print(f"Failed to connect, return code {rc}. Retrying in 5 seconds...")
+        threading.Timer(5, lambda: client.reconnect()).start()  # Attempt reconnect
 
 def mqtt_on_message(client, userdata, msg):
     try:
@@ -497,13 +507,23 @@ def mqtt_on_message(client, userdata, msg):
     except Exception as e:
         print("Error processing MQTT message:", e)
 
+# Now assign the function as a callback
+mqtt_client = mqtt.Client()
+mqtt_client.on_message = mqtt_on_message
+
+
 def start_mqtt_subscriber():
     mqtt_client = mqtt.Client()
     mqtt_client.on_connect = mqtt_on_connect
     mqtt_client.on_message = mqtt_on_message
-    mqtt_client.connect(mqtt_server, mqtt_port, 60)
-    print("Starting MQTT subscriber loop...")
-    mqtt_client.loop_forever()
+
+    try:
+        mqtt_client.connect(mqtt_server, mqtt_port, 60)
+        print("Starting MQTT subscriber loop...")
+        mqtt_client.loop_forever()
+    except Exception as e:
+        print(f"MQTT connection error: {e}. Retrying in 10 seconds...")
+        threading.Timer(10, start_mqtt_subscriber).start()  # Reconnect loop
 
 @app.route('/api/current_power/<meter_number>')
 def api_current_power(meter_number):
